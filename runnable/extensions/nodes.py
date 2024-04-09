@@ -5,13 +5,19 @@ import sys
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from pydantic import ConfigDict, Field, ValidationInfo, field_serializer, field_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+)
 from typing_extensions import Annotated
 
 from runnable import datastore, defaults, utils
-from runnable.datastore import JsonParameter, ObjectParameter, StepLog
+from runnable.datastore import JsonParameter, MetricParameter, ObjectParameter, StepLog
 from runnable.defaults import TypeMapVariable
 from runnable.graph import Graph, create_graph
 from runnable.nodes import CompositeNode, ExecutableNode, TerminalNode
@@ -45,6 +51,16 @@ class TaskNode(ExecutableNode):
         executable = create_task(task_config)
         return cls(executable=executable, **node_config, **task_config)
 
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+            "executable": self.executable.get_summary(),
+            "catalog": self._get_catalog_settings(),
+        }
+
+        return summary
+
     def execute(
         self,
         mock=False,
@@ -63,9 +79,8 @@ class TaskNode(ExecutableNode):
         Returns:
             StepAttempt: The attempt object
         """
-        print("Executing task:", self._context.executor._context_node)
-
         step_log = self._context.run_log_store.get_step_log(self._get_step_log_name(map_variable), self._context.run_id)
+
         if not mock:
             # Do not run if we are mocking the execution, could be useful for caching and dry runs
             attempt_log = self.executable.execute_command(map_variable=map_variable)
@@ -77,6 +92,9 @@ class TaskNode(ExecutableNode):
                 end_time=str(datetime.now()),
                 attempt_number=attempt_number,
             )
+
+        logger.debug(f"attempt_log: {attempt_log}")
+        logger.info(f"Step {self.name} completed with status: {attempt_log.status}")
 
         step_log.status = attempt_log.status
 
@@ -95,6 +113,14 @@ class FailNode(TerminalNode):
     @classmethod
     def parse_from_config(cls, config: Dict[str, Any]) -> "FailNode":
         return cast("FailNode", super().parse_from_config(config))
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+        }
+
+        return summary
 
     def execute(
         self,
@@ -118,7 +144,7 @@ class FailNode(TerminalNode):
         step_log = self._context.run_log_store.get_step_log(self._get_step_log_name(map_variable), self._context.run_id)
 
         attempt_log = datastore.StepAttempt(
-            status=defaults.FAIL,
+            status=defaults.SUCCESS,
             start_time=str(datetime.now()),
             end_time=str(datetime.now()),
             attempt_number=attempt_number,
@@ -147,6 +173,14 @@ class SuccessNode(TerminalNode):
     @classmethod
     def parse_from_config(cls, config: Dict[str, Any]) -> "SuccessNode":
         return cast("SuccessNode", super().parse_from_config(config))
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+        }
+
+        return summary
 
     def execute(
         self,
@@ -206,6 +240,15 @@ class ParallelNode(CompositeNode):
     node_type: str = Field(default="parallel", serialization_alias="type")
     branches: Dict[str, Graph]
     is_composite: bool = Field(default=True, exclude=True)
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+            "branches": [branch.get_summary() for branch in self.branches.values()],
+        }
+
+        return summary
 
     @field_serializer("branches")
     def ser_branches(self, branches: Dict[str, Graph]) -> Dict[str, Graph]:
@@ -296,6 +339,7 @@ class ParallelNode(CompositeNode):
             executor (BaseExecutor): The executor class as defined by the config
             map_variable (dict, optional): If the node is part of a map. Defaults to None.
         """
+        effective_internal_name = self._resolve_map_placeholders(self.internal_name, map_variable=map_variable)
         step_success_bool = True
         for internal_branch_name, _ in self.branches.items():
             effective_branch_name = self._resolve_map_placeholders(internal_branch_name, map_variable=map_variable)
@@ -304,7 +348,7 @@ class ParallelNode(CompositeNode):
                 step_success_bool = False
 
         # Collate all the results and update the status of the step
-        effective_internal_name = self._resolve_map_placeholders(self.internal_name, map_variable=map_variable)
+
         step_log = self._context.run_log_store.get_step_log(effective_internal_name, self._context.run_id)
 
         if step_success_bool:  #  If none failed
@@ -335,9 +379,23 @@ class MapNode(CompositeNode):
     node_type: str = Field(default="map", serialization_alias="type")
     iterate_on: str
     iterate_as: str
+    iterate_index: bool = Field(default=False)  # TODO: Need to design this
     reducer: Optional[str] = Field(default=None)
     branch: Graph
     is_composite: bool = True
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+            "branch": self.branch.get_summary(),
+            "iterate_on": self.iterate_on,
+            "iterate_as": self.iterate_as,
+            "iterate_index": self.iterate_index,
+            "reducer": self.reducer,
+        }
+
+        return summary
 
     def get_reducer_function(self):
         if not self.reducer:
@@ -375,12 +433,12 @@ class MapNode(CompositeNode):
 
     @property
     def branch_returns(self):
-        branch_returns = []
+        branch_returns: List[Tuple[str, Union[ObjectParameter, MetricParameter, JsonParameter]]] = []
         for _, node in self.branch.nodes.items():
             if isinstance(node, TaskNode):
                 for task_return in node.executable.returns:
                     if task_return.kind == "json":
-                        branch_returns.append((task_return.name, JsonParameter(kind="json", value=None, reduced=False)))
+                        branch_returns.append((task_return.name, JsonParameter(kind="json", value="", reduced=False)))
                     elif task_return.kind == "object":
                         branch_returns.append(
                             (
@@ -390,7 +448,11 @@ class MapNode(CompositeNode):
                                     value="Will be reduced",
                                     reduced=False,
                                 ),
-                            )  # type: ignore
+                            )
+                        )
+                    elif task_return.kind == "metric":
+                        branch_returns.append(
+                            (task_return.name, MetricParameter(kind="metric", value="", reduced=False))
                         )
                     else:
                         raise Exception("kind should be either json or object")
@@ -513,6 +575,7 @@ class MapNode(CompositeNode):
         iterate_on = params[self.iterate_on].get_value()
         # # Find status of the branches
         step_success_bool = True
+        effective_internal_name = self._resolve_map_placeholders(self.internal_name, map_variable=map_variable)
 
         for iter_variable in iterate_on:
             effective_branch_name = self._resolve_map_placeholders(
@@ -523,7 +586,6 @@ class MapNode(CompositeNode):
                 step_success_bool = False
 
         # Collate all the results and update the status of the step
-        effective_internal_name = self._resolve_map_placeholders(self.internal_name, map_variable=map_variable)
         step_log = self._context.run_log_store.get_step_log(effective_internal_name, self._context.run_id)
 
         if step_success_bool:  #  If none failed and nothing is waiting
@@ -579,6 +641,13 @@ class DagNode(CompositeNode):
     branch: Graph
     is_composite: bool = True
     internal_branch_name: Annotated[str, Field(validate_default=True)] = ""
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+        }
+        return summary
 
     @field_validator("internal_branch_name")
     @classmethod
@@ -711,7 +780,15 @@ class StubNode(ExecutableNode):
     """
 
     node_type: str = Field(default="stub", serialization_alias="type")
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="ignore")
+
+    def get_summary(self) -> Dict[str, Any]:
+        summary = {
+            "name": self.name,
+            "type": self.node_type,
+        }
+
+        return summary
 
     @classmethod
     def parse_from_config(cls, config: Dict[str, Any]) -> "StubNode":

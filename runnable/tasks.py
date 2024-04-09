@@ -15,8 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from stevedore import driver
 
 import runnable.context as context
-from runnable import defaults, parameters, utils
-from runnable.datastore import JsonParameter, ObjectParameter, Parameter, StepAttempt
+from runnable import console, defaults, exceptions, parameters, utils
+from runnable.datastore import (
+    JsonParameter,
+    MetricParameter,
+    ObjectParameter,
+    Parameter,
+    StepAttempt,
+)
 from runnable.defaults import TypeMapVariable
 
 logger = logging.getLogger(defaults.LOGGER_NAME)
@@ -28,7 +34,7 @@ logging.getLogger("stevedore").setLevel(logging.CRITICAL)
 
 class TaskReturns(BaseModel):
     name: str
-    kind: Literal["json", "object"] = Field(default="json")
+    kind: Literal["json", "object", "metric"] = Field(default="json")
 
 
 class BaseTaskType(BaseModel):
@@ -40,6 +46,9 @@ class BaseTaskType(BaseModel):
     returns: List[TaskReturns] = Field(default_factory=list, alias="returns")
 
     model_config = ConfigDict(extra="forbid")
+
+    def get_summary(self) -> Dict[str, Any]:
+        return self.model_dump(by_alias=True, exclude_none=True)
 
     @property
     def _context(self):
@@ -98,12 +107,15 @@ class BaseTaskType(BaseModel):
         self.set_secrets_as_env_variables()
         try:
             yield
+        except Exception as e:  # pylint: disable=broad-except
+            logger.exception(e)
         finally:
             self.delete_secrets_from_env_variables()
 
     @contextlib.contextmanager
     def execution_context(self, map_variable: TypeMapVariable = None, allow_complex: bool = True):
         params = self._context.run_log_store.get_parameters(run_id=self._context.run_id).copy()
+        logger.info(f"Parameters available for the execution: {params}")
 
         for param_name, param in params.items():
             # Any access to unreduced param should be replaced.
@@ -117,6 +129,8 @@ class BaseTaskType(BaseModel):
 
                 if context_param in params:
                     params[param_name].value = params[context_param].value
+
+        logger.debug(f"Resolved parameters: {params}")
 
         if not allow_complex:
             params = {key: value for key, value in params.items() if isinstance(value, JsonParameter)}
@@ -132,6 +146,8 @@ class BaseTaskType(BaseModel):
         try:
             with contextlib.redirect_stdout(f):
                 yield params
+        except Exception as e:  # pylint: disable=broad-except
+            logger.exception(e)
         finally:
             print(f.getvalue())  # print to console
             log_file.write(f.getvalue())  # Print to file
@@ -140,14 +156,11 @@ class BaseTaskType(BaseModel):
             log_file.close()
 
             # Put the log file in the catalog
-            catalog_handler = context.run_context.catalog_handler
-            catalog_handler.put(name=log_file.name, run_id=context.run_context.run_id)
+            # self._context.catalog_handler.put(name=log_file.name, run_id=context.run_context.run_id)
             os.remove(log_file.name)
 
             # Update parameters
             self._context.run_log_store.set_parameters(parameters=params, run_id=self._context.run_id)
-
-            return True  # To suppress exceptions
 
 
 def task_return_to_parameter(task_return: TaskReturns, value: Any) -> Parameter:
@@ -160,6 +173,9 @@ def task_return_to_parameter(task_return: TaskReturns, value: Any) -> Parameter:
 
     if task_return.kind == "json":
         return JsonParameter(kind="json", value=value)
+
+    if task_return.kind == "metric":
+        return MetricParameter(kind="metric", value=value)
 
     if task_return.kind == "object":
         obj = ObjectParameter(value=task_return.name, kind="object")
@@ -197,12 +213,22 @@ class PythonTaskType(BaseTaskType):  # pylint: disable=too-few-public-methods
             imported_module = importlib.import_module(module)
             f = getattr(imported_module, func)
 
-            filtered_parameters = parameters.filter_arguments_for_func(f, params.copy(), map_variable)
-            logger.info(f"Calling {func} from {module} with {filtered_parameters}")
-
             try:
-                user_set_parameters = f(**filtered_parameters)  # This is a tuple or single value
+                try:
+                    filtered_parameters = parameters.filter_arguments_for_func(f, params.copy(), map_variable)
+                    logger.info(f"Calling {func} from {module} with {filtered_parameters}")
+                    user_set_parameters = f(**filtered_parameters)  # This is a tuple or single value
+                except Exception as e:
+                    logger.exception(e)
+                    console.print(e, style=defaults.error_style)
+                    raise exceptions.CommandCallError(f"Function call: {self.command} did not succeed.\n") from e
+
                 attempt_log.input_parameters = params.copy()
+
+                if map_variable:
+                    attempt_log.input_parameters.update(
+                        {k: JsonParameter(value=v, kind="json") for k, v in map_variable.items()}
+                    )
 
                 if self.returns:
                     if not isinstance(user_set_parameters, tuple):  # make it a tuple
@@ -212,12 +238,16 @@ class PythonTaskType(BaseTaskType):  # pylint: disable=too-few-public-methods
                         raise ValueError("Returns task signature does not match the function returns")
 
                     output_parameters: Dict[str, Parameter] = {}
+                    metrics: Dict[str, Parameter] = {}
 
                     for i, task_return in enumerate(self.returns):
                         output_parameter = task_return_to_parameter(
                             task_return=task_return,
                             value=user_set_parameters[i],
                         )
+
+                        if task_return.kind == "metric":
+                            metrics[task_return.name] = output_parameter
 
                         param_name = task_return.name
                         if map_variable:
@@ -227,14 +257,15 @@ class PythonTaskType(BaseTaskType):  # pylint: disable=too-few-public-methods
                         output_parameters[param_name] = output_parameter
 
                     attempt_log.output_parameters = output_parameters
+                    attempt_log.user_defined_metrics = metrics
                     params.update(output_parameters)
 
                 attempt_log.status = defaults.SUCCESS
             except Exception as _e:
-                msg = f"Call to the function {self.command} with {filtered_parameters} did not succeed.\n"
-                logger.exception(msg)
+                msg = f"Call to the function {self.command} did not succeed.\n"
                 logger.exception(_e)
-                attempt_log.status = defaults.FAIL
+                attempt_log.message = msg
+                console.print(_e, style=defaults.error_style)
 
         attempt_log.end_time = str(datetime.now())
 
@@ -296,7 +327,6 @@ class NotebookTaskType(BaseTaskType):
                 if map_variable:
                     for key, value in map_variable.items():
                         notebook_output_path += "_" + str(value)
-
                         params[key] = value
 
                 notebook_params = {k: v.get_value() for k, v in params.items()}

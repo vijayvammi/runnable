@@ -1,5 +1,11 @@
-from examples.tutorials.steps import clean, extract_text, model_fit, tfidf, tokenize
-from runnable import Pipeline, PythonTask, pickled
+from examples.tutorials.reddit_text_classification.steps import (
+    clean,
+    extract_text,
+    model_fit,
+    tfidf,
+    tokenize,
+)
+from runnable import Pipeline, PythonTask, Stub, pickled
 
 
 def driver():
@@ -19,27 +25,24 @@ def driver():
 
 
 def runnable_pipeline():
-    extract_task = PythonTask(name="extract", function=extract_text, returns=[pickled("x"), pickled("labels")])
-    clean_task = PythonTask(name="clean", function=clean, returns=[pickled("cleaned_x")])
-    tokenize_task = PythonTask(name="tokenize", function=tokenize, returns=[pickled("tokenised_x")])
-    vectorise_task = PythonTask(name="tfidf", function=tfidf, returns=[pickled("vectorised_x")])
+    extract_task = Stub(name="extract", function=extract_text, returns=[pickled("x"), pickled("labels")])
+    clean_task = Stub(name="clean", function=clean, returns=[pickled("cleaned_x")])
+    tokenize_task = Stub(name="tokenize", function=tokenize, returns=[pickled("tokenised_x")])
+    vectorise_task = Stub(name="tfidf", function=tfidf, returns=[pickled("vectorised_x")])
 
-    model_fit_task = PythonTask(
+    model_fit_task = Stub(
         name="model_fit",
         function=model_fit,
-        returns=[pickled("y_probabilities")],
+        returns=[pickled("y_probabilities"), pickled("lr_model")],
         terminate_with_success=True,
     )
 
-    extract_task >> clean_task >> tokenize_task >> vectorise_task >> model_fit_task
-
     pipeline = Pipeline(
-        start_at=extract_task,
         steps=[extract_task, clean_task, tokenize_task, vectorise_task, model_fit_task],
         add_terminal_nodes=True,
     )
 
-    pipeline.execute(parameters_file="examples/tutorials/parameters.yaml")
+    pipeline.execute(parameters_file="examples/tutorials/reddit_text_classification/parameters.yaml")
 
     return pipeline
 

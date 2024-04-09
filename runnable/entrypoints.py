@@ -5,10 +5,11 @@ import os
 import sys
 from typing import Optional, cast
 
-from rich import print
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.table import Column
 
 import runnable.context as context
-from runnable import defaults, graph, utils
+from runnable import console, defaults, graph, utils
 from runnable.defaults import RunnableConfig, ServiceConfig
 
 logger = logging.getLogger(defaults.LOGGER_NAME)
@@ -64,6 +65,8 @@ def prepare_configurations(
 
     configuration: RunnableConfig = cast(RunnableConfig, templated_configuration)
 
+    logger.info(f"Resolved configurations: {configuration}")
+
     # Run log settings, configuration over-rides everything
     run_log_config: Optional[ServiceConfig] = configuration.get("run_log_store", None)
     if not run_log_config:
@@ -86,14 +89,6 @@ def prepare_configurations(
     pickler_config = cast(ServiceConfig, runnable_defaults.get("pickler", defaults.DEFAULT_PICKLER))
     pickler_handler = utils.get_provider_by_name_and_type("pickler", pickler_config)
 
-    # experiment tracker settings, configuration over-rides everything
-    tracker_config: Optional[ServiceConfig] = configuration.get("experiment_tracker", None)
-    if not tracker_config:
-        tracker_config = cast(
-            ServiceConfig, runnable_defaults.get("experiment_tracker", defaults.DEFAULT_EXPERIMENT_TRACKER)
-        )
-    tracker_handler = utils.get_provider_by_name_and_type("experiment_tracker", tracker_config)
-
     # executor configurations, configuration over rides everything
     executor_config: Optional[ServiceConfig] = configuration.get("executor", None)
     if force_local_executor:
@@ -110,7 +105,6 @@ def prepare_configurations(
         catalog_handler=catalog_handler,
         secrets_handler=secrets_handler,
         pickler=pickler_handler,
-        experiment_tracker=tracker_handler,
         variables=variables,
         tag=tag,
         run_id=run_id,
@@ -176,8 +170,8 @@ def execute(
         tag=tag,
         parameters_file=parameters_file,
     )
-    print("Working with context:")
-    print(run_context)
+    console.print("Working with context:")
+    console.print(run_context)
 
     executor = run_context.executor
 
@@ -188,8 +182,28 @@ def execute(
     # Prepare for graph execution
     executor.prepare_for_graph_execution()
 
-    logger.info("Executing the graph")
-    executor.execute_graph(dag=run_context.dag)  # type: ignore
+    logger.info(f"Executing the graph: {run_context.dag}")
+    with Progress(
+        TextColumn("[progress.description]{task.description}", table_column=Column(ratio=2)),
+        BarColumn(table_column=Column(ratio=1), style="dark_orange"),
+        TimeElapsedColumn(table_column=Column(ratio=1)),
+        console=console,
+        expand=True,
+    ) as progress:
+        pipeline_execution_task = progress.add_task("[dark_orange] Starting execution .. ", total=1)
+        try:
+            run_context.progress = progress
+            executor.execute_graph(dag=run_context.dag)  # type: ignore
+
+            run_log = run_context.run_log_store.get_run_log_by_id(run_id=run_context.run_id, full=False)
+
+            if run_log.status == defaults.SUCCESS:
+                progress.update(pipeline_execution_task, description="[green] Success", completed=True)
+            else:
+                progress.update(pipeline_execution_task, description="[red] Failed", completed=True)
+        except Exception as e:  # noqa: E722
+            console.print(e, style=defaults.error_style)
+            progress.update(pipeline_execution_task, description="[red] Errored execution", completed=True)
 
     executor.send_return_code()
 
@@ -227,8 +241,8 @@ def execute_single_node(
         tag=tag,
         parameters_file=parameters_file,
     )
-    print("Working with context:")
-    print(run_context)
+    console.print("Working with context:")
+    console.print(run_context)
 
     executor = run_context.executor
     run_context.execution_plan = defaults.EXECUTION_PLAN.CHAINED.value
@@ -280,8 +294,8 @@ def execute_notebook(
     run_context.execution_plan = defaults.EXECUTION_PLAN.UNCHAINED.value
     utils.set_runnable_environment_variables(run_id=run_id, configuration_file=configuration_file, tag=tag)
 
-    print("Working with context:")
-    print(run_context)
+    console.print("Working with context:")
+    console.print(run_context)
 
     step_config = {
         "command": notebook_file,
@@ -342,8 +356,8 @@ def execute_function(
     run_context.execution_plan = defaults.EXECUTION_PLAN.UNCHAINED.value
     utils.set_runnable_environment_variables(run_id=run_id, configuration_file=configuration_file, tag=tag)
 
-    print("Working with context:")
-    print(run_context)
+    console.print("Working with context:")
+    console.print(run_context)
 
     # Prepare the graph with a single node
     step_config = {
@@ -411,8 +425,8 @@ def fan(
         tag=tag,
         parameters_file=parameters_file,
     )
-    print("Working with context:")
-    print(run_context)
+    console.print("Working with context:")
+    console.print(run_context)
 
     executor = run_context.executor
     run_context.execution_plan = defaults.EXECUTION_PLAN.CHAINED.value
@@ -437,4 +451,4 @@ def fan(
 
 if __name__ == "__main__":
     # This is only for perf testing purposes.
-    prepare_configurations(run_id="abc", pipeline_file="example/mocking.yaml")
+    prepare_configurations(run_id="abc", pipeline_file="examples/mocking.yaml")

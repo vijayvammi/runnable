@@ -1,57 +1,34 @@
 # Runnable
 
-                                                       ,////,
-                                                      /// 6|
-                                                      //  _|
-                                                    _/_,-'
-                                                _.-/'/   \   ,/;,
-                                            ,-' /'  \_   \ / _/
-                                             `\ /     _/\  ` /
-                                               |     /,  `\_/
-                                               |     \'
-                                    /\_        /`      /\
-                                  /' /_``--.__/\  `,. /  \
-                                  |_/`  `-._     `\/  `\   `.
-                                            `-.__/'     `\   |
-                                                         `\  \
-                                                          `\ \
-                                                            \_\__
-                                                              \___)
-
-
----
-
-## What does it do?
-
 <figure markdown>
-  ![Image title](assets/cropped.png){ width="1200" height="800"}
-  <figcaption></figcaption>
+  ![Image title](assets/sport.png){ width="200" height="100"}
+  <figcaption>Orchestrate your functions, notebooks, scripts anywhere!!</figcaption>
 </figure>
 
+<span style="font-size:0.75em;">
+<a href="https://www.flaticon.com/free-icons/runner" title="runner icons">Runner icons created by Leremy - Flaticon</a>
+</span>
 ---
 
 ## Example
 
+The data science specific code is a well-known
+[iris example from scikit-learn](https://scikit-learn.org/stable/auto_examples/linear_model/plot_iris_logistic.html).
 
-### functions
-
-The below content is assumed to be ```examples/functions.py```
-
-!!! note inline end "pydantic models"
-
-    The functions should use pydantic models as their outputs.
-
-    Pydantic models offer better representations of the input and output, inspired by
-    [FastAPI's implementation](https://fastapi.tiangolo.com/features/#pydantic-features).
 
 ```python linenums="1"
---8<-- "examples/functions.py"
+--8<-- "examples/iris_demo.py"
 ```
 
 
-There is nothing special about the functions, they are *plain old python functions*.
+1. Return objects X and Y.
+2. Store the file `iris_logistic.png` for future reference.
+3. Define the sequence of tasks.
+4. Define a pipeline with the tasks
 
-!!! tip "Notebooks and Shell scripts"
+The difference between native driver and runnable orchestration:
+
+!!! tip inline end "Notebooks and Shell scripts"
 
     You can execute notebooks and shell scripts too!!
 
@@ -59,285 +36,171 @@ There is nothing special about the functions, they are *plain old python functio
 
 
 
-### local :runner:
+
+<div class="annotate" markdown>
+
+```diff
+
+- X, Y = load_data()
++load_data_task = PythonTask(
++    function=load_data,
++     name="load_data",
++     returns=[pickled("X"), pickled("Y")], (1)
++    )
+
+-logreg = model_fit(X, Y, C=1.0)
++model_fit_task = PythonTask(
++   function=model_fit,
++   name="model_fit",
++   returns=[pickled("logreg")],
++   )
+
+-generate_plots(X, Y, logreg)
++generate_plots_task = PythonTask(
++   function=generate_plots,
++   name="generate_plots",
++   terminate_with_success=True,
++   catalog=Catalog(put=["iris_logistic.png"]), (2)
++   )
 
 
-Replace the "driver" function with a *runnable* definition in either ```python sdk```
-or ```yaml```.
++pipeline = Pipeline(
++   steps=[load_data_task, model_fit_task, generate_plots_task], (3)
+
+```
+</div>
+
+1. Return objects X and Y.
+2. Store the file `iris_logistic.png` for future reference.
+3. Define the sequence of tasks.
+
+---
+
+- [x] Absolutely no change in data science code to make it `runnable`
+- [x] The ```driver``` function has an equivalent and intuitive runnable expression
+- [x] Reproducible by default, runnable stores metadata about code/data/config for every execution.
+- [x] The pipeline is `runnable` in any environment.
 
 
-=== "yaml"
+## But why runnable?
 
-    !!! note inline end "pipeline and steps"
+Obviously, there are a lot of orchestration tools in python. A well maintained and curated [list is
+available here](https://github.com/EthicalML/awesome-production-machine-learning/).
 
-        The pipeline is essentially a representation of the "driver" function.
-
-        The gains by this definition for local executions are clearer by the metadata gathered
-        during the exeuction.
-
-    ``` yaml linenums="1"
-    --8<-- "examples/python-tasks.yaml"
-    ```
-
-    1. Start the pipeline execution at step1
-    2. The name of the step.
-    3. The path to the python function
-    4. Go to step2, if successful
-    5. Go to success node, if successful
-    6. Mark the execution as success
+Below is a rough comparison of `runnable` to others.
 
 
+|Feature|runnable|Airflow|Argo workflows|Metaflow|ZenML|Kedro|
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+|Cross platform|:white_check_mark:|:white_check_mark:|:white_check_mark:|:white_check_mark:|:white_check_mark:|:white_check_mark:|
+|Bring your own infrastructure |:white_check_mark:|:x:|:x:|:x:|:x:|:white_check_mark:|
+|Local executions|:white_check_mark:|:x:|:x:|:white_check_mark:|:white_check_mark:|:white_check_mark:|
+|Bring your own code|:white_check_mark:|:x:|:x:|:x:|:x:|:x:|
+|Reproducibility of executions|:white_check_mark:|:x:|:x:|:white_check_mark:|:white_check_mark:|:white_check_mark:|
+|Easy to move on|:white_check_mark:|:X:|:x:|:x:|:x:|:white_check_mark:|
+|End to end platform|:x:|:white_check_mark:|:x:|:white_check_mark:|:white_check_mark:|:x:|
+|Task level orchestration|:x:|:white_check_mark:|:white_check_mark:|:x:|:x:|:x:|
+|Notebook as tasks|:white_check_mark:|:x:|:x:|:x:|:x:|:x:|
+|Unit testable pipelines|:white_check_mark:|:x:|:x:|:white_check_mark:|:white_check_mark:|:x:|
+|Multi language support|:white_check_mark:|:white_check_mark:|:white_check_mark:|:X:|:x:|:x:|
 
-=== "python"
 
-    !!! note inline end "pipeline and steps"
 
-        The pipeline is essentially a representation of the "driver" function.
 
-        The gains by this definition for local executions are clearer by the metadata gathered
-        during the exeuction.
+They can be broadly classified in three categories:
 
-    ```python linenums="1"
-    --8<-- "examples/python-tasks.py"
-    ```
+- __Native orchestrators__: These orchestrators are responsible for task level orchestration,
+resource management on chosen infrastructure. Examples:
 
-    1. The name of the step.
-    2. The path to the python function
-    3. ```terminate_with_success``` indicates that the pipeline is completed successfully. You can also use ```terminate_with_failure``` to indicate the pipeline fail.
-    4. There are many ways to define dependencies within nodes, step1 >> step2, step1 << step2 or using depends_on.
-    5. Start the pipeline execution at step1
-    6. The list of steps to be executed, the order does not matter.
-    7. Add ```success``` and ```fail``` nodes to the pipeline.
-    8. Returns the metadata captured during the execution.
+    - Airflow
+    - Argo workflows
+    - AWS step functions
 
-=== "metadata"
 
-    #### TODO: Change this
+#### runnable is complimentary to these orchestrators and is designed to enable data teams use them effectively.
 
-    Captures information to understand the execution plan for debugging or
-    lineage purposes.
+- __Platforms__: These are meant to provide end to end platform for training, deploying and
+serving of ML models. Examples:
 
-    ```json linenums="1"
-    {
-      "run_id": "piquant-pasteur-0613", // Unique run identifier
-      "dag_hash": "",
-      "use_cached": false,
-      "tag": "",
-      "original_run_id": "",
-      "status": "SUCCESS",
-      "steps": {
-          "step1": {
-              "name": "step1", // name of the step
-              "internal_name": "step1",
-              "status": "SUCCESS",
-              "step_type": "task",
-              "message": "",
-              "mock": false,
-              "code_identities": [ // The code status at the time of execution of step1
-                  {
-                      "code_identifier": "f68561360eed64e2715929d2ddd0736fd277d706",
-                      "code_identifier_type": "git",
-                      "code_identifier_dependable": true,
-                      "code_identifier_url": "https://github.com/vijayvammi/runnable.git",
-                      "code_identifier_message": ""
-                  }
-              ],
-              "attempts": [
-                  {
-                      "attempt_number": 1,
-                      "start_time": "2024-02-25 06:13:53.295595",
-                      "end_time": "2024-02-25 06:13:53.306082",
-                      "duration": "0:00:00.010487",
-                      "status": "SUCCESS",
-                      "message": "",
-                      "parameters": {}
-                  }
-              ],
-              "user_defined_metrics": {},
-              "branches": {},
-              "data_catalog": [
-                  {
-                      "name": "step1.execution.log", // THe stdout and stderr of execution
-                      "data_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                      "catalog_relative_path": "piquant-pasteur-0613/step1.execution.log",
-                      "catalog_handler_location": ".catalog",
-                      "stage": "put"
-                  }
-              ]
-          },
-          "step2": {
-              "name": "step2",
-              "internal_name": "step2",
-              "status": "SUCCESS",
-              "step_type": "task",
-              "message": "",
-              "mock": false,
-              "code_identities": [
-                  {
-                      "code_identifier": "f68561360eed64e2715929d2ddd0736fd277d706",
-                      "code_identifier_type": "git",
-                      "code_identifier_dependable": true,
-                      "code_identifier_url": "https://github.com/vijayvammi/runnable.git",
-                      "code_identifier_message": ""
-                  }
-              ],
-              "attempts": [
-                  {
-                      "attempt_number": 1,
-                      "start_time": "2024-02-25 06:13:53.372941",
-                      "end_time": "2024-02-25 06:13:53.378192",
-                      "duration": "0:00:00.005251",
-                      "status": "SUCCESS",
-                      "message": "",
-                      "parameters": { // The parameters at the time of execution
-                          "x": 1,
-                          "y": {
-                              "foo": 10,
-                              "bar": "hello world"
-                          }
-                      }
-                  }
-              ],
-              "user_defined_metrics": {},
-              "branches": {},
-              "data_catalog": [
-                  {
-                      "name": "step2.execution.log",
-                      "data_hash": "612160fd5e1d7d1f3d8b4db1a6e73de63f97ff4c5db616525f856d774a2837b4",
-                      "catalog_relative_path": "piquant-pasteur-0613/step2.execution.log",
-                      "catalog_handler_location": ".catalog",
-                      "stage": "put"
-                  }
-              ]
-          },
-          "success": {
-              "name": "success",
-              "internal_name": "success",
-              "status": "SUCCESS",
-              "step_type": "success",
-              "message": "",
-              "mock": false,
-              "code_identities": [
-                  {
-                      "code_identifier": "f68561360eed64e2715929d2ddd0736fd277d706",
-                      "code_identifier_type": "git",
-                      "code_identifier_dependable": true,
-                      "code_identifier_url": "https://github.com/vijayvammi/runnable.git",
-                      "code_identifier_message": ""
-                  }
-              ],
-              "attempts": [
-                  {
-                      "attempt_number": 1,
-                      "start_time": "2024-02-25 06:13:53.441232",
-                      "end_time": "2024-02-25 06:13:53.441295",
-                      "duration": "0:00:00.000063",
-                      "status": "SUCCESS",
-                      "message": "",
-                      "parameters": {
-                          "x": 1,
-                          "y": {
-                              "foo": 10,
-                              "bar": "hello world"
-                          }
-                      }
-                  }
-              ],
-              "user_defined_metrics": {},
-              "branches": {},
-              "data_catalog": []
-          }
-      },
-      "parameters": { // THe final state of the parameters
-          "x": 1,
-          "y": {
-              "foo": 10,
-              "bar": "hello world"
-          }
-      },
-      "run_config": { // The configuration of the execution
-          "executor": {
-              "service_name": "local",
-              "service_type": "executor",
-              "enable_parallel": false,
-              "overrides": {}
-          },
-          "run_log_store": {
-              "service_name": "buffered",
-              "service_type": "run_log_store"
-          },
-          "secrets_handler": {
-              "service_name": "do-nothing",
-              "service_type": "secrets"
-          },
-          "catalog_handler": {
-              "service_name": "file-system",
-              "service_type": "catalog",
-              "catalog_location": ".catalog"
-          },
-          "experiment_tracker": {
-              "service_name": "do-nothing",
-              "service_type": "experiment_tracker"
-          },
-          "pipeline_file": "",
-          "parameters_file": "",
-          "configuration_file": "",
-          "tag": "",
-          "run_id": "piquant-pasteur-0613",
-          "variables": {},
-          "use_cached": false,
-          "original_run_id": "",
-          "dag": { // THe pipeline representation
-              "start_at": "step1",
-              "name": "",
-              "description": "",
-              "steps": {
-                  "step1": {
-                      "type": "task",
-                      "name": "step1",
-                      "next": "step2",
-                      "on_failure": "",
-                      "overrides": {},
-                      "catalog": null,
-                      "max_attempts": 1,
-                      "command": "examples.functions.return_parameter",
-                      "command_type": "python",
-                      "node_name": "step1"
-                  },
-                  "step2": {
-                      "type": "task",
-                      "name": "step2",
-                      "next": "success",
-                      "on_failure": "",
-                      "overrides": {},
-                      "catalog": null,
-                      "max_attempts": 1,
-                      "command": "examples.functions.display_parameter",
-                      "command_type": "python",
-                      "node_name": "step2"
-                  },
-                  "success": {
-                      "type": "success",
-                      "name": "success"
-                  },
-                  "fail": {
-                      "type": "fail",
-                      "name": "fail"
-                  }
-              }
-          },
-          "dag_hash": "",
-          "execution_plan": "chained"
-      }
-    }
-    ```
+    - Dagster
+    - Prefect
+    - Flyte
 
-:sparkles: Thats it!! :sparkles:
+    They have specific infrastructure requirements and are great if the entire organization buys into
+    their philosophy and ways of working.
 
-By adding *one file* you created a pipeline. Your application code
-did not change at all.
+#### runnable is designed to work with your infrastructure and ways of working instead of dictating them.
 
-There is no boilerplate code, no adherence to structure, no intrusion into the
-application code.
 
-### cloud :runner:
+
+- __Meta orchestrators__: Orchestrators using the native orchestrators but provide a simplified
+SDK tailored for typical data oriented tasks. Examples include:
+
+    - Kedro: cross platform transpiler.
+    - Metaflow: A mix of platform and SDK.
+    - ZenML: A mix of platform and SDK.
+
+runnable is a _meta orchestrator_ with different design decisions.
+
+
+<div class="grid cards" markdown>
+
+-   :material-clock-fast:{ .lg .middle } __Easy to adopt, its mostly your code__
+
+    ---
+
+    Your application code remains as it is. Runnable exists outside of it.
+
+    - No API's or decorators or imposed structure.
+    - Most often it is a single file.
+
+    [:octicons-arrow-right-24: Getting started](concepts/the-big-picture.md)
+
+-    :building_construction:{ .lg .middle } __Bring your infrastructure__
+
+    ---
+
+    Runnable can be adapted to your infrastructure stack instead of dictating it.
+
+    - Intentionally minimal in scope as a composer of pipelines in native orchestrators.
+    - Every execution is ready to be deployed to production.
+
+    [:octicons-arrow-right-24: Infrastructure](configurations/overview.md)
+
+-   :memo:{ .lg .middle } __Reproducibility__
+
+    ---
+
+    Runnable tracks key information to reproduce the execution. All this happens without
+    any additional code.
+
+    [:octicons-arrow-right-24: Run Log](concepts/run-log.md)
+
+
+
+-   :repeat:{ .lg .middle } __Retry failues__
+
+    ---
+
+    Debug any failure in your local development environment.
+
+    [:octicons-arrow-right-24: Retry](#)
+
+-   :microscope:{ .lg .middle } __Testing__
+
+    ---
+
+    Unit test your code and pipelines.
+
+    [:octicons-arrow-right-24: Test](#)
+
+
+
+-   :broken_heart:{ .lg .middle } __Move on__
+
+    ---
+
+    Moving away from runnable is as simple as deleting relevant files.
+
+
+</div>
